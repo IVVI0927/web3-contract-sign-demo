@@ -1,0 +1,39 @@
+{
+  "laws": [
+    {
+      "id": "contract-law-nda",
+      "title": "Non-Disclosure Agreement Law",
+      "content": "A non-disclosure agreement (NDA) is a legally binding contract that establishes a confidential relationship between parties. The party or parties signing the agreement agree that sensitive information they may obtain will not be made available to others.",
+      "category": "Contract Law",
+      "references": ["Uniform Trade Secrets Act", "Economic Espionage Act"]
+    },
+    {
+      "id": "contract-law-indemnity",
+      "title": "Indemnification Law",
+      "content": "Indemnification is a legal agreement by one party to hold another party harmless for potential losses or damages. The indemnifying party agrees to protect the indemnified party from any claims, damages, or losses that may arise from a particular event or circumstance.",
+      "category": "Contract Law",
+      "references": ["Restatement (Second) of Contracts", "Uniform Commercial Code"]
+    },
+    {
+      "id": "contract-law-termination",
+      "title": "Contract Termination Law",
+      "content": "Contract termination refers to the ending of a contract before the obligations have been fulfilled. This can occur through mutual agreement, breach of contract, or operation of law. The termination may be immediate or may require notice depending on the terms of the contract.",
+      "category": "Contract Law",
+      "references": ["Restatement (Second) of Contracts", "Uniform Commercial Code"]
+    },
+    {
+      "id": "contract-law-liability",
+      "title": "Limitation of Liability Law",
+      "content": "A limitation of liability clause is a provision in a contract that limits the amount of exposure a company faces in the event a lawsuit is filed or another claim is made. These clauses are often used to protect businesses from excessive damages.",
+      "category": "Contract Law",
+      "references": ["Uniform Commercial Code", "Restatement (Second) of Contracts"]
+    },
+    {
+      "id": "contract-law-jurisdiction",
+      "title": "Jurisdiction and Governing Law",
+      "content": "Jurisdiction and governing law clauses specify which state's or country's laws will be used to interpret the contract and which courts will have authority to hear disputes. These clauses are crucial for contracts involving parties from different locations.",
+      "category": "Contract Law",
+      "references": ["Uniform Commercial Code", "Restatement (Second) of Conflicts of Law"]
+    }
+  ]
+} 
