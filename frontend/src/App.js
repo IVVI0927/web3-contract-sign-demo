@@ -5,18 +5,21 @@ import "./App.css";
 
 function App() {
   const [walletAddress, setWalletAddress] = useState("");
-  const [partyB, setPartyB] = useState("");
+  const [signers, setSigners] = useState("");
   const [ipfsHash, setIpfsHash] = useState("");
   const [contract, setContract] = useState(null);
-  const [agreementData, setAgreementData] = useState(null);
   const [queryId, setQueryId] = useState("0");
+  const [signersStatus, setSignersStatus] = useState(null);
 
   const contractAddress = "0x5FbDB2315678afecb367f032d93F642f64180aa3"; // ← 替换成你的合约地址！
 
   const contractABI = [
-    "function createAgreement(address _partyB, string memory _ipfsHash) public",
-    "function getAgreement(uint256) public view returns (address,address,string,bool,bool)"
-  ];
+  "function createContract(address[] _signers, string _ipfsHash) public returns (uint256)",
+  "function signContract(uint256 _id) public",
+  "function getSigners(uint256 _id) public view returns (address[])",
+  "function isSigned(uint256 _id, address _signer) public view returns (bool)",
+  "function isFinalized(uint256 _id) public view returns (bool)"
+];
 
   const connectWallet = async () => {
     if (!window.ethereum) {
@@ -45,7 +48,8 @@ function App() {
       return;
     }
     try {
-      const tx = await contract.createAgreement(partyB, ipfsHash);
+      const signersArray = signers.split(",").map(addr => addr.trim()).filter(addr => addr);
+      const tx = await contract.createContract(signersArray, ipfsHash);
       await tx.wait();
       alert("✅ 合约已创建！");
     } catch (error) {
@@ -54,16 +58,37 @@ function App() {
     }
   };
 
-  const getAgreement = async () => {
+  const signAgreement = async () => {
     if (!contract) {
-      alert("请先连接钱包！");
+      alert("合约尚未连接");
       return;
     }
     try {
-      const result = await contract.getAgreement(queryId);
-      setAgreementData(result);
-    } catch (err) {
-      console.error("查询失败:", err);
+      const tx = await contract.signContract(Number(queryId));
+      await tx.wait();
+      alert("✅ 合约已签署！");
+    } catch (error) {
+      console.error("签署失败:", error);
+      alert("❌ 签署失败！");
+    }
+  };
+
+  const showSignersStatus = async () => {
+    if (!contract) {
+      alert("合约尚未连接");
+      return;
+    }
+    try {
+      const id = Number(queryId);
+      const signersList = await contract.getSigners(id);
+      const statusList = await Promise.all(signersList.map(async (signer) => {
+        const signed = await contract.isSigned(id, signer);
+        return { signer, signed };
+      }));
+      setSignersStatus(statusList);
+    } catch (error) {
+      console.error("查询签署状态失败:", error);
+      alert("❌ 查询签署状态失败！");
     }
   };
 
@@ -88,9 +113,9 @@ function App() {
         <h2>➕ 创建合约记录</h2>
         <input
           type="text"
-          placeholder="乙方地址（partyB）"
-          value={partyB}
-          onChange={(e) => setPartyB(e.target.value)}
+          placeholder="请输入多个地址，以逗号分隔"
+          value={signers}
+          onChange={(e) => setSigners(e.target.value)}
         />
         <br />
         <input
@@ -106,7 +131,7 @@ function App() {
       </div>
 
       <div style={{ marginTop: "2rem" }}>
-        <h2>🔍 查询合约状态</h2>
+        <h2>🔏 签署合约</h2>
         <input
           type="text"
           placeholder="输入合约编号（如0）"
@@ -114,15 +139,14 @@ function App() {
           onChange={(e) => setQueryId(e.target.value)}
         />
         <br />
-        <button onClick={getAgreement}>查询合约</button>
+        <button onClick={signAgreement}>签署合约</button>
+        <button onClick={showSignersStatus} style={{ marginLeft: "1rem" }}>显示签署状态</button>
 
-        {agreementData && (
+        {signersStatus && (
           <div style={{ marginTop: "1rem", textAlign: "left" }}>
-            <p>甲方: {agreementData[0]}</p>
-            <p>乙方: {agreementData[1]}</p>
-            <p>IPFS 哈希: {agreementData[2]}</p>
-            <p>甲方已签: {agreementData[3] ? "✅" : "❌"}</p>
-            <p>乙方已签: {agreementData[4] ? "✅" : "❌"}</p>
+            {signersStatus.map(({ signer, signed }) => (
+              <p key={signer}>{signer}: {signed ? "✅ 已签署" : "❌ 未签署"}</p>
+            ))}
           </div>
         )}
       </div>
