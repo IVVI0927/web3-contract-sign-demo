@@ -1,11 +1,11 @@
-// scripts/deploy.js
 const { ethers } = require("hardhat");
 
 async function main() {
   const Contract = await ethers.getContractFactory("ContractSignTwoParty");
   const contract = await Contract.deploy();
-  await contract.deployed();
-  console.log("✅ Contract deployed to:", contract.address);
+  await contract.waitForDeployment();
+
+  console.log("ContractSignTwoParty deployed to:", await contract.getAddress());
 }
 
 main().catch((error) => {

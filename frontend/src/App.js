@@ -1,154 +1,391 @@
-import { uploadFileToIPFS } from "./utils/uploadToIPFS";
+/* global BigInt */
 import React, { useState } from "react";
 import { ethers } from "ethers";
 import "./App.css";
+import { uploadFileToIPFS } from "./utils/uploadToIPFS";
+import { digestFile, shortenHex } from "./security/documentDigest";
+import {
+  assessTransactionRisk,
+  buildDeadlineTimestamp,
+  formatStatus,
+  validateAgreementId,
+  validateCreateAgreementInput
+} from "./security/transactionGuards";
+
+const contractAddress = process.env.REACT_APP_CONTRACT_ADDRESS || "";
+
+const contractABI = [
+  "function createAgreement(address _counterparty, bytes32 _documentDigest, string _documentUri, uint64 _signingDeadline) returns (uint256)",
+  "function signAgreement(uint256 _agreementId)",
+  "function cancelAgreement(uint256 _agreementId)",
+  "function canSign(uint256 _agreementId, address _account) view returns (bool)",
+  "function getAgreement(uint256 _agreementId) view returns (address creator, address counterparty, bytes32 documentDigest, string documentUri, uint64 createdAt, uint64 signingDeadline, bool creatorSigned, bool counterpartySigned, uint8 status)"
+];
 
 function App() {
   const [walletAddress, setWalletAddress] = useState("");
-  const [signers, setSigners] = useState("");
-  const [ipfsHash, setIpfsHash] = useState("");
+  const [chainId, setChainId] = useState("");
+  const [counterparty, setCounterparty] = useState("");
+  const [documentUri, setDocumentUri] = useState("");
+  const [documentDigest, setDocumentDigest] = useState("");
+  const [deadlineHours, setDeadlineHours] = useState("24");
   const [contract, setContract] = useState(null);
-  const [queryId, setQueryId] = useState("0");
-  const [signersStatus, setSignersStatus] = useState(null);
-
-  const contractAddress = "0x5FbDB2315678afecb367f032d93F642f64180aa3"; // ← 替换成你的合约地址！
-
-  const contractABI = [
-  "function createContract(address[] _signers, string _ipfsHash) public returns (uint256)",
-  "function signContract(uint256 _id) public",
-  "function getSigners(uint256 _id) public view returns (address[])",
-  "function isSigned(uint256 _id, address _signer) public view returns (bool)",
-  "function isFinalized(uint256 _id) public view returns (bool)"
-];
+  const [agreementId, setAgreementId] = useState("0");
+  const [agreementData, setAgreementData] = useState(null);
+  const [securityMessages, setSecurityMessages] = useState([]);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
 
   const connectWallet = async () => {
     if (!window.ethereum) {
-      alert("Please install MetaMask!");
+      setSecurityMessages(["MetaMask is required to run this security demo."]);
+      return;
+    }
+
+    if (!contractAddress) {
+      setSecurityMessages([
+        "Missing REACT_APP_CONTRACT_ADDRESS. Configure the deployed contract address before connecting."
+      ]);
       return;
     }
 
     try {
       const provider = new ethers.BrowserProvider(window.ethereum);
+      await provider.send("eth_requestAccounts", []);
       const signer = await provider.getSigner();
-      const address = await signer.getAddress();
-      setWalletAddress(address);
+      const network = await provider.getNetwork();
+      const connectedAddress = await signer.getAddress();
 
-      const agreementContract = new ethers.Contract(contractAddress, contractABI, signer);
-      setContract(agreementContract);
+      setWalletAddress(connectedAddress);
+      setChainId(network.chainId.toString());
+      setContract(new ethers.Contract(contractAddress, contractABI, signer));
+      setSecurityMessages([]);
+      setStatusMessage(`Connected ${connectedAddress} on chain ID ${network.chainId.toString()}.`);
+    } catch (error) {
+      setSecurityMessages([`Wallet connection failed: ${error.message}`]);
+    }
+  };
 
-      console.log("Connected to wallet:", address);
-    } catch (err) {
-      console.error("Wallet connection failed:", err);
+  const handleFileChange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) {
+      return;
+    }
+
+    setIsUploading(true);
+    setSecurityMessages([]);
+
+    try {
+      const digest = await digestFile(file);
+      setDocumentDigest(digest);
+
+      try {
+        const cid = await uploadFileToIPFS(file);
+        setDocumentUri(`ipfs://${cid}`);
+        setStatusMessage(`Document hashed and uploaded. Digest ${shortenHex(digest)} mapped to ${cid}.`);
+      } catch (uploadError) {
+        setStatusMessage(
+          `Document hashed locally as ${shortenHex(digest)}. IPFS upload skipped: ${uploadError.message}`
+        );
+      }
+    } catch (error) {
+      setSecurityMessages([`Failed to hash document: ${error.message}`]);
+    } finally {
+      setIsUploading(false);
     }
   };
 
   const createAgreement = async () => {
     if (!contract) {
-      alert("合约尚未连接");
+      setSecurityMessages(["Connect a wallet before creating an agreement."]);
       return;
     }
+
+    const inputErrors = validateCreateAgreementInput({
+      walletAddress,
+      counterparty,
+      documentDigest,
+      documentUri,
+      deadlineHours
+    });
+
+    if (inputErrors.length > 0) {
+      setSecurityMessages(inputErrors);
+      return;
+    }
+
     try {
-      const signersArray = signers.split(",").map(addr => addr.trim()).filter(addr => addr);
-      const tx = await contract.createContract(signersArray, ipfsHash);
+      const deadline = buildDeadlineTimestamp(deadlineHours);
+      const gasEstimate = await contract.createAgreement.estimateGas(
+        counterparty,
+        documentDigest,
+        documentUri,
+        deadline
+      );
+      const feeData = await contract.runner.provider.getFeeData();
+      const txRisk = assessTransactionRisk({
+        chainId,
+        gasEstimate,
+        maxFeePerGas: feeData.maxFeePerGas,
+        value: 0n
+      });
+
+      if (txRisk.errors.length > 0) {
+        setSecurityMessages(txRisk.errors);
+        return;
+      }
+
+      setSecurityMessages(txRisk.warnings);
+
+      const tx = await contract.createAgreement(
+        counterparty,
+        documentDigest,
+        documentUri,
+        deadline
+      );
       await tx.wait();
-      alert("✅ 合约已创建！");
+      setStatusMessage(
+        `Agreement submitted with digest ${shortenHex(documentDigest)} and gas estimate ${gasEstimate.toString()}.`
+      );
     } catch (error) {
-      console.error("创建失败:", error);
-      alert("❌ 创建失败！");
+      setSecurityMessages([`Agreement creation failed: ${error.shortMessage || error.message}`]);
+    }
+  };
+
+  const loadAgreement = async () => {
+    if (!contract) {
+      setSecurityMessages(["Connect a wallet before querying agreement state."]);
+      return;
+    }
+
+    const inputErrors = validateAgreementId(agreementId);
+    if (inputErrors.length > 0) {
+      setSecurityMessages(inputErrors);
+      return;
+    }
+
+    try {
+      const data = await contract.getAgreement(BigInt(agreementId));
+      const canCurrentSignerSign = walletAddress
+        ? await contract.canSign(BigInt(agreementId), walletAddress)
+        : false;
+
+      setAgreementData({
+        creator: data.creator,
+        counterparty: data.counterparty,
+        documentDigest: data.documentDigest,
+        documentUri: data.documentUri,
+        createdAt: Number(data.createdAt),
+        signingDeadline: Number(data.signingDeadline),
+        creatorSigned: data.creatorSigned,
+        counterpartySigned: data.counterpartySigned,
+        status: formatStatus(data.status),
+        canCurrentSignerSign
+      });
+      setSecurityMessages([]);
+      setStatusMessage(`Loaded agreement ${agreementId}.`);
+    } catch (error) {
+      setSecurityMessages([`Agreement lookup failed: ${error.shortMessage || error.message}`]);
     }
   };
 
   const signAgreement = async () => {
     if (!contract) {
-      alert("合约尚未连接");
+      setSecurityMessages(["Connect a wallet before signing."]);
       return;
     }
+
+    const inputErrors = validateAgreementId(agreementId);
+    if (inputErrors.length > 0) {
+      setSecurityMessages(inputErrors);
+      return;
+    }
+
     try {
-      const tx = await contract.signContract(Number(queryId));
+      const gasEstimate = await contract.signAgreement.estimateGas(BigInt(agreementId));
+      const feeData = await contract.runner.provider.getFeeData();
+      const txRisk = assessTransactionRisk({
+        chainId,
+        gasEstimate,
+        maxFeePerGas: feeData.maxFeePerGas,
+        value: 0n
+      });
+
+      if (txRisk.errors.length > 0) {
+        setSecurityMessages(txRisk.errors);
+        return;
+      }
+
+      setSecurityMessages(txRisk.warnings);
+
+      const tx = await contract.signAgreement(BigInt(agreementId));
       await tx.wait();
-      alert("✅ 合约已签署！");
+      setStatusMessage(`Agreement ${agreementId} signed after passing transaction checks.`);
+      await loadAgreement();
     } catch (error) {
-      console.error("签署失败:", error);
-      alert("❌ 签署失败！");
+      setSecurityMessages([`Signature failed: ${error.shortMessage || error.message}`]);
     }
   };
 
-  const showSignersStatus = async () => {
+  const cancelAgreement = async () => {
     if (!contract) {
-      alert("合约尚未连接");
+      setSecurityMessages(["Connect a wallet before cancelling."]);
       return;
     }
-    try {
-      const id = Number(queryId);
-      const signersList = await contract.getSigners(id);
-      const statusList = await Promise.all(signersList.map(async (signer) => {
-        const signed = await contract.isSigned(id, signer);
-        return { signer, signed };
-      }));
-      setSignersStatus(statusList);
-    } catch (error) {
-      console.error("查询签署状态失败:", error);
-      alert("❌ 查询签署状态失败！");
-    }
-  };
 
-  const handleFileChange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const cid = await uploadFileToIPFS(file);
-    alert("上传成功，CID为: " + cid);
-    setIpfsHash(cid);
+    const inputErrors = validateAgreementId(agreementId);
+    if (inputErrors.length > 0) {
+      setSecurityMessages(inputErrors);
+      return;
+    }
+
+    try {
+      const tx = await contract.cancelAgreement(BigInt(agreementId));
+      await tx.wait();
+      setStatusMessage(`Agreement ${agreementId} cancelled by creator.`);
+      await loadAgreement();
+    } catch (error) {
+      setSecurityMessages([`Cancellation failed: ${error.shortMessage || error.message}`]);
+    }
   };
 
   return (
-    <div className="App" style={{ padding: "2rem" }}>
-      <h1>📝 Web3 合约签署 Demo</h1>
-      {!walletAddress ? (
-        <button onClick={connectWallet}>连接 MetaMask 钱包</button>
-      ) : (
-        <p>✅ 钱包已连接: {walletAddress}</p>
-      )}
-
-      <div style={{ marginTop: "2rem" }}>
-        <h2>➕ 创建合约记录</h2>
-        <input
-          type="text"
-          placeholder="请输入多个地址，以逗号分隔"
-          value={signers}
-          onChange={(e) => setSigners(e.target.value)}
-        />
-        <br />
-        <input
-          type="text"
-          placeholder="IPFS 哈希（或上传文件）"
-          value={ipfsHash}
-          onChange={(e) => setIpfsHash(e.target.value)}
-        />
-        <br />
-        <input type="file" onChange={handleFileChange} />
-        <br />
-        <button onClick={createAgreement}>📩 创建链上合约</button>
+    <div className="app-shell">
+      <div className="hero-card">
+        <p className="eyebrow">Blockchain Security Engineering Demo</p>
+        <h1>Secure Document Signing Workflow</h1>
+        <p className="hero-copy">
+          This demo focuses on safer contract interaction: document integrity checks,
+          signer authorization, deadline enforcement, and transaction risk warnings.
+        </p>
+        <button className="primary-button" onClick={connectWallet}>
+          {walletAddress ? "Reconnect Wallet" : "Connect Wallet"}
+        </button>
+        <div className="meta-grid">
+          <div className="meta-card">
+            <span>Wallet</span>
+            <strong>{walletAddress ? shortenHex(walletAddress) : "Not connected"}</strong>
+          </div>
+          <div className="meta-card">
+            <span>Chain ID</span>
+            <strong>{chainId || "Unknown"}</strong>
+          </div>
+          <div className="meta-card">
+            <span>Contract</span>
+            <strong>{contractAddress ? shortenHex(contractAddress) : "Missing env var"}</strong>
+          </div>
+        </div>
       </div>
 
-      <div style={{ marginTop: "2rem" }}>
-        <h2>🔏 签署合约</h2>
-        <input
-          type="text"
-          placeholder="输入合约编号（如0）"
-          value={queryId}
-          onChange={(e) => setQueryId(e.target.value)}
-        />
-        <br />
-        <button onClick={signAgreement}>签署合约</button>
-        <button onClick={showSignersStatus} style={{ marginLeft: "1rem" }}>显示签署状态</button>
+      <div className="panel-grid">
+        <section className="panel">
+          <h2>Create Protected Agreement</h2>
+          <label>
+            Counterparty Address
+            <input
+              type="text"
+              value={counterparty}
+              onChange={(event) => setCounterparty(event.target.value)}
+              placeholder="0x..."
+            />
+          </label>
+          <label>
+            Document URI
+            <input
+              type="text"
+              value={documentUri}
+              onChange={(event) => setDocumentUri(event.target.value)}
+              placeholder="ipfs://..."
+            />
+          </label>
+          <label>
+            Document SHA-256 Digest
+            <input
+              type="text"
+              value={documentDigest}
+              onChange={(event) => setDocumentDigest(event.target.value)}
+              placeholder="0x..."
+            />
+          </label>
+          <label>
+            Signing Window (hours)
+            <input
+              type="number"
+              min="1"
+              max="720"
+              value={deadlineHours}
+              onChange={(event) => setDeadlineHours(event.target.value)}
+            />
+          </label>
+          <label className="file-input">
+            Upload File to Hash
+            <input type="file" onChange={handleFileChange} />
+          </label>
+          <button className="primary-button" onClick={createAgreement} disabled={isUploading}>
+            {isUploading ? "Hashing..." : "Create Agreement"}
+          </button>
+        </section>
 
-        {signersStatus && (
-          <div style={{ marginTop: "1rem", textAlign: "left" }}>
-            {signersStatus.map(({ signer, signed }) => (
-              <p key={signer}>{signer}: {signed ? "✅ 已签署" : "❌ 未签署"}</p>
-            ))}
+        <section className="panel">
+          <h2>Agreement Monitoring</h2>
+          <label>
+            Agreement ID
+            <input
+              type="text"
+              value={agreementId}
+              onChange={(event) => setAgreementId(event.target.value)}
+              placeholder="0"
+            />
+          </label>
+          <div className="action-row">
+            <button className="secondary-button" onClick={loadAgreement}>
+              Load Agreement
+            </button>
+            <button className="secondary-button" onClick={signAgreement}>
+              Sign Agreement
+            </button>
+            <button className="danger-button" onClick={cancelAgreement}>
+              Cancel
+            </button>
           </div>
-        )}
+
+          {agreementData ? (
+            <div className="agreement-card">
+              <p><strong>Status:</strong> {agreementData.status}</p>
+              <p><strong>Creator:</strong> {agreementData.creator}</p>
+              <p><strong>Counterparty:</strong> {agreementData.counterparty}</p>
+              <p><strong>Document Digest:</strong> {agreementData.documentDigest}</p>
+              <p><strong>Document URI:</strong> {agreementData.documentUri}</p>
+              <p><strong>Creator Signed:</strong> {agreementData.creatorSigned ? "Yes" : "No"}</p>
+              <p><strong>Counterparty Signed:</strong> {agreementData.counterpartySigned ? "Yes" : "No"}</p>
+              <p><strong>Current Wallet Can Sign:</strong> {agreementData.canCurrentSignerSign ? "Yes" : "No"}</p>
+              <p><strong>Deadline:</strong> {new Date(agreementData.signingDeadline * 1000).toLocaleString()}</p>
+            </div>
+          ) : (
+            <p className="muted-copy">No agreement loaded yet.</p>
+          )}
+        </section>
+
+        <section className="panel">
+          <h2>Security Analysis</h2>
+          <ul className="signal-list">
+            <li>Transactions are pre-checked for unexpected chain ID and abnormal gas settings.</li>
+            <li>Document integrity is anchored on-chain with a SHA-256 digest instead of trusting only a URI.</li>
+            <li>IPFS upload secrets are read from environment variables instead of hard-coded in source.</li>
+            <li>Signing is limited to the creator and named counterparty, with deadline-based expiry.</li>
+          </ul>
+          {statusMessage ? <p className="status-banner">{statusMessage}</p> : null}
+          {securityMessages.length > 0 ? (
+            <div className="warning-card">
+              <h3>Security Messages</h3>
+              {securityMessages.map((message) => (
+                <p key={message}>{message}</p>
+              ))}
+            </div>
+          ) : (
+            <p className="muted-copy">No current validation warnings.</p>
+          )}
+        </section>
       </div>
     </div>
   );
