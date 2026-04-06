@@ -43,7 +43,7 @@ A modern web application for analyzing legal documents, identifying key clauses,
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/legal-doc-analyzer.git
+   git clone https://github.com/IVVI0927/legal-doc-analyzer.git
    cd legal-doc-analyzer
    ```
 
